@@ -1,0 +1,434 @@
+---
+title: "Modele dwumianowe"
+output: 
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+    theme: "flatly"
+    code_folding: hide
+---
+## Zadanie 3
+
+Plik framingham.csv zawiera dane pochodzące z badania wzdłużnego ryzyka wystąpienia choroby niedokrwiennej serca (CHD - coronary heart disease). Badanie przeprowadzono na mieszkańcach miasta Framingham w stanie Massachusetts.
+
+Proszę zbudować i ocenić model logitowy objaśniający ryzyko wystąpienia choroby niedokrwiennej serca, następnie porównać z modelem probitowym oraz zinterpretować otrzymane wyniki. 
+
+**Zmienna objaśniana**
+
+* TenYearCHD: wystąpienie choroby niedokrwiennej serca CHD w ciągu 10 lat (1 – tak, 0 – nie)
+
+**Zmienne objaśniające**
+
+Demograficzne
+
+* male: czy mężczyzna (1 – tak, 0 – nie)
+* age: wiek pacjenta (w ukończonych latach)
+* education: poziomy wykształcenia (1, 2, 3, 4)
+
+Behawioralne
+
+* currentSmoker: czy pacjent aktualnie pali papierosy (1 – tak, 0 – nie), zmienna jakosciowa
+* cigs Per Day: liczba papierosów, które dana osoba wypala średnio w ciągu jednego dnia,zmienna ilościowa
+
+Medyczne (historia chorób)
+
+* BPMeds: czy pacjent przyjmował leki na ciśnienie krwi (1 – tak, 0 – nie)
+* prevalentStroke: przebyty udar - czy pacjent miał wcześniej udar (1 – tak, 0 – nie)
+* prevalentHyp: czy pacjent miał nadciśnienie (1 – tak, 0 – nie)
+* diabetes: czy pacjent chorował na cukrzycę (1 – tak, 0 – nie)
+
+Medyczne (bieżące pomiary)
+
+* totChol: całkowity poziom cholesterolu
+* sysBP:  skurczowe ciśnienie krwi
+* diaBP: rozkurczowe ciśnienie krwi
+* BMI: wskaźnik masy ciała
+* heartRate: tętno
+* glucose: poziom glukozy
+
+Źródło: https://www.kaggle.com/datasets/dileep070/heart-disease-prediction-using-logistic-regression
+
+### Załadowanie pakietów
+```{r message=FALSE, warning=FALSE}
+library("vcd") # funkcja assocstats() - współczynniki kontyngencji
+library("lmtest") #testy LR i Walda globalne
+library("car") # funkcja vif()
+library("pscl") #pseudo-R2 funkcja pR2()
+library("pROC") #funkcje roc, auc
+```
+
+### Wczytanie danych
+```{r}
+dane3 <- read.table("framingham.csv", header = TRUE, sep = ";",dec=",")
+```
+
+Statystyki opisowe dla poszczególnych zmiennych: 
+```{r}
+dane3$education <- as.factor(dane3$education)
+dane3$TenYearCHD <- as.factor(dane3$TenYearCHD)
+summary(dane3)
+#Proszę sprawdzić, czy zmienne są odpowiedniego typu.
+```
+
+## Wstępna analiza danych
+Przed zbudowaniem modelu należy dokonać analizy rozkładów poszczególnych zmiennych, przedstawić je na wykresie, zidentyfikować obserwacje nietypowe.
+
+Proszę zaproponować wstępne analizy:
+
+```{r}
+boxplot(dane3$sysBP)
+boxplot(dane3$sysBP ~ dane3$TenYearCHD)
+
+```
+
+
+Przykładowo związek między jakościową zmienną objaśnianą a potencjalnymi predyktorami ilościowymi można przedstawić na wykresie warunkowych prawdopodobieństw wystąpienia wariantów (atrybutów) cechy jakościowej (w tym przypadku wystąpienia CHD) pod warunkiem, że zmienna ilościowa przyjmuje określony poziom.
+```{r}
+cdplot(dane3$age, dane3$TenYearCHD, xlab = "Wiek", ylab = "CHD")
+cdplot(dane3$sysBP, dane3$TenYearCHD, xlab = "Ciśnienie skurczowe", ylab = "CHD")
+cdplot(dane3$cigsPerDay, dane3$TenYearCHD, xlab = "Liczba papierowow dzinnie", ylab = "CHD")
+#Proszę wykonać wykresy dla pozostałych predyktorów ilościowych
+```
+
+## Sprawdzenie korelacji parami zmiennych objaśniających
+Czy można wykorzystać do budowy modelu wszystkie zmienne dostępne ze zbioru danych?
+
+Nie można, ponieważ zmienne objaśniające są powiązane.
+
+tu jest 8 ilosciowych i 7 jakosciowych (6 dychotomicznych 0-1)
+
+Macierz korelacji dla ilościowych zmiennych objaśniających (współczynnik korelacji Pearsona)
+
+```{r}
+round(cor(dane3[,c(2,5,10:15)]),3)
+
+```
+
+Zaleca się unikania w modelu zmiennych nadmiernie skorelowanych, tzn. w przypadku współczynnika korelacji Pearsona `|r|>=0.7`. 
+
+**Wnioski**
+
+Na macierzy korelacji widac ze cisnienie skurczowe i rozkurczowe sa silnie skorelowane, dlatego musmiy oozbyc sie jednej z tych zmiennych. mniej waznej, wiec wynieramy skurczowe
+
+```{r}
+round(cor(dane3[,c(2,5,10,11,13,14,15)], dane3[,c(1,4,6:9)]),3)
+```
+
+
+W przypadku par zmiennych jakościowych stosujemy współczynniki kontyngencji, np. V Cramera - silna korelacja, gdy `V > 0.5`.
+
+Przykładowo płeć a palenie papierosów
+```{r}
+assocstats(table(dane3$male, dane3$BPMeds))
+
+assocstats(table(dane3$BPMeds, dane3$education))
+
+#Proszę uzupełnić analizy
+```
+
+**Wnioski**
+
+Ze zbioru predyktorów usuwamy:
+
+............................................................................
+
+## Podział zbioru na uczący i testowy
+Zbiór uczący/treningowy (train) służy do budowy modelu, a zbiór testowy (test) służy do oceny modelu. Dokonamy losowego podziału w proporcji: 70% i 30% odpowiednio. Przy każdym wywołaniu funkcji `sample()` otrzymujemy inne zbiory. W celu powtarzalności eksperymentu stosuje się funkcję `set.seed()`, która inicjuje „ziarno” dla generatora liczb losowych - dla ustalonego "ziarna" w każdym momencie i na każdym komputerze otrzymuje się ten sam zestaw liczb losowych. Ustalmy `set.seed()`, abyśmy mogli porównac wyniki.
+
+```{r}
+set.seed(1257)     #set.seed(NULL) --> usunięcie "ziarna"
+n <- nrow(dane3)
+liczby_losowe <- sample(c(1:n), round(0.7*n), replace = FALSE)
+dane3_uczacy <- dane3[liczby_losowe,]
+dane3_testowy <- dane3[-liczby_losowe,]
+```
+
+Sprawdźmy jakie są proporcje `TenYearCHD` w podzbiorach danych.
+
+```{r}
+prop.table(table(dane3_uczacy$TenYearCHD))
+prop.table(table(dane3_testowy$TenYearCHD))
+
+
+
+```
+
+
+## Estymacja modelu dwumianowego logitowego
+Estymujemy model dla zmiennej dychotomicznej (binarnej) Y `family = binomial` z domyślną funkcją wiążącą logit `link = logit`
+
+```{r}
+logit0 <- glm(TenYearCHD ~ male + age + education + cigsPerDay + BPMeds + prevalentStroke + totChol + sysBP + BMI + heartRate + glucose, data = dane3_uczacy, family = binomial)
+summary(logit0)
+```
+
+Testy istotności wszystkich zmiennych niezależnych w modelu: test ilorazu wiarygodności lub test Walda.
+```{r}
+lrtest(logit0)
+waldtest(logit0)
+```
+
+Sprawdzenie, czy zmienne objaśniające nie są współliniowe.
+```{r}
+vif(logit0)
+```
+
+Estymacja modelu `logit1` metodą krokową przy minimalizacji kryterium informacyjnego AIC. Argument `direction=` "forward" lub "backward" lub "both" (domyślnie) określa metodę krokową. Proszę porównać wyniki otrzymane trzema metodami krokowymi. 
+```{r}
+logit1 <- step(logit0)
+summary(logit1)
+```
+
+Jaki jest wynik testu istotności wszystkich zmiennych niezależnych w modelu `logit1`?
+.....
+```{r}
+lrtest(logit1)
+waldtest(logit1)
+```
+
+Czy zmienne objaśniające są współliniowe?
+.....
+Estymacja modelu `logit2` poprzez usunięcie z modelu `logit1` zmiennej nieistotnej
+```{r}
+logit2 <- glm(TenYearCHD ~ male + age + cigsPerDay + sysBP + glucose, data = dane3_uczacy, family = binomial)
+summary(logit2)
+
+```
+
+..................................................................................
+
+Jaki jest wynik testu istotności wszystkich zmiennych niezależnych w modelu `logit2`? Czy zmienne objaśniające są współliniowe?
+.....
+```{r}
+lrtest(logit2)
+waldtest(logit2)
+```
+
+### Porównanie dobroci dopasowania modeli logitowych
+
+Definiujemy funkcję `ocena_modelu_dwum` do oceny dobroci dopasowania modeli dwumianowych
+```{r}
+#Proszę uzupelnić definicję funkcji
+ocena_modelu_dwum <- function(model) {
+  kryterium_AIC <- AIC(model)
+  kryterium_BIC <- BIC(model)
+  McFadden<- pR2(model)[4]
+  Cragg_Uhler<- pR2(model)[6]
+  ocena <- data.frame(kryterium_AIC, kryterium_BIC, McFadden, Cragg_Uhler)
+  return(ocena)
+}
+```
+
+Wywołujemy powyższą funkcję dla estymowanych modeli
+```{r}
+wyniki_oceny_logit <- rbind(
+  model_0=ocena_modelu_dwum(logit0), 
+  model_1=ocena_modelu_dwum(logit1), 
+  model_2=ocena_modelu_dwum(logit2))
+wyniki_oceny_logit
+```
+
+**Wnioski**
+
+aic niewiele sie rozni, bic ... czyli bierzemy model 2 - chodzi namm o odkrycie predyktorow, 
+### Interpretacja wybranego modelu ----2
+
+Wyznaczenie ilorazów szans, to jest wektor, ronimy dzialania na kazdym ele wektora
+
+```{r}
+round(exp(logit2$coefficients),4)
+round(exp(10*logit2$coefficients)[3:6],4)
+```
+
+Interpretacja
+
+!!! - exp(b0) = 0.0001' gdzie b0 to wyraz wolny => interpretuje sie jako szanse zdarzenia w grupie referencyjnej (wszystkie xi = 0), o ile ma to sens => tu nie ma sensu bo wiek 0 i cisnienie 0
+
+*plec*
+
+'exp(b1) = 1,662 => (exp(b)-1)*100% = 66.2%'
+
+szansa wystapienia CHD u mezczyzn jest wieksza srednio o 66% niz u kobiet przy pozostałych wartościach cech takich samych (ceteris paribus).
+
+*wiek*
+'exp(b2) = 1.075 => (exp(b2)-1)*100% = 7.5%'
+'exp(10*b2) = 2.05 => (exp(b2)-1)*100% = 105%'
+
+Jezeli wiek wzrośnie o  1 rok, to szansa wystapienia CHD wzrosnie srednio o o7.5% (ceteris paribus).
+A Jezeli wiek wzrosnie o 10 lat, to szansa wrzosnie sredni o okolo 2 razy, bo mamy age, (2.0540)
+etc...
+
+## Estymacja modelu dwumianowego probitowego
+Estymujemy model dla zmiennej dychotomicznej (binarnej) Y `family = binomial` z funkcją wiążącą probit `link = probit`
+
+```{r}
+probit0 <- glm(TenYearCHD ~ male + age + education + cigsPerDay + BPMeds + prevalentStroke + totChol + sysBP + BMI + heartRate + glucose, data = dane3_uczacy, family = binomial(link=probit))
+summary(probit0)
+```
+
+Estymacja modelu `probit1` metodą krokową przy minimalizacji kryterium informacyjnego AIC. Proszę porównać wyniki otrzymane trzema metodami krokowymi. 
+
+
+```{r}
+probit1 <- step(probit0)
+summary(probit1)
+```
+
+Jak interpretujemy parametry modelu probitowego?
+
+mezczyzni to 1 konbiety 0, wiec wieksza szanse maja mezczyzni bo..., wraz ze wzrostem cisnienia i poziomu glukozy io liczby wypalonych papierowos wzrasta prawdopodobienstwo wytapienia CHD,
+
+### Porównanie dobroci dopasowania modeli logitowego i probitowego
+
+Model `probit1` posiada taki sam zestaw predyktorów jak model .......?
+```{r}
+wyniki_oceny_logit_probit <- rbind(
+  model_logit_1=ocena_modelu_dwum(logit1),
+  model_logit_2=ocena_modelu_dwum(logit2),
+  model_probit_1=ocena_modelu_dwum(probit1))
+wyniki_oceny_logit_probit
+```
+
+**Wnioski**
+AIC, BIC - minim
+pseudo R^2 max - oba ostatnie wiec logit1
+Lepszym modelem jest ...., ponieważ ....
+
+## Porównanie jakości predykcji modeli logitowego i probitowego
+
+Porównajmy modele z tymi samymi zestawami predyktorów
+
+Tablice trafności dla wybranego punktu odcięcia p*
+
+Niech p* = proporcja z próby uczącej
+```{r}
+p <- table(dane3_uczacy$TenYearCHD)[2]/nrow(dane3_uczacy)
+
+cat("Tablica trafności dla modelu logitowego - próba ucząca\n")
+tab_traf <- data.frame(obserwowane=logit2$y, przewidywane=ifelse(logit2$fitted.values>p, 1, 0))
+table(tab_traf)
+
+cat("Tablica trafności dla modelu probitowego - próba ucząca\n")
+tab_traf <- data.frame(obserwowane=probit1$y, przewidywane=ifelse(probit1$fitted.values>p, 1, 0))
+table(tab_traf)
+
+cat("Tablica trafności dla modelu logitowego - próba testowa\n")
+tab_traf <- data.frame(obserwowane=dane3_testowy$TenYearCHD, przewidywane=ifelse(predict(logit2, dane3_testowy, type = "response")>p, 1, 0))
+table(tab_traf)
+
+cat("Tablica trafności dla modelu probitowego - próba testowa\n")
+tab_traf <- data.frame(obserwowane=dane3_testowy$TenYearCHD, przewidywane=ifelse(predict(probit1, dane3_testowy, type = "response")>p, 1, 0))
+table(tab_traf)
+```
+
+### Miary jakości predykcji
+Miary oparte na tablicy trafności dla dla wybranego punktu odcięcia p*
+
+Poniższa funkcja `miary_pred` została określona dla argumentów: `model` (model dwumianowy), `dane` (np. zbiór uczący, testowy), `Y` (obserwowany Y 0-1 w analizowanym zbiorze danych).
+```{r}
+miary_pred <- function(model, dane, Y, p = 0.5) {
+  tab <- table(obserwowane = Y, przewidywane = ifelse(predict(model, dane, type = "response") > p, 1, 0))
+  ACC <- (tab[1,1]+tab[2,2])/sum(tab)
+  ER <- (tab[1,2]+tab[2,1])/sum(tab)
+  
+  SENS <- tab[2,2]/(tab[2,2]+tab[2,1])
+  SPEC <- tab[1,1]/(tab[1,1]+tab[1,2])
+  
+  PPV <- tab[2,2]/(tab[2,2]+tab[1,2])
+  NPV <- tab[1,1]/(tab[1,1]+tab[2,1])
+  
+  miary <- data.frame(ACC, ER, SENS, SPEC, PPV, NPV)
+  return(miary)
+}
+```
+
+Ocena zdolności predykcyjnej na zbiorze uczącym
+
+```{r}
+wyniki_miary_pred_u <- rbind(
+  model_logit = miary_pred(model = logit2, dane = dane3_uczacy,  Y = dane3_uczacy$TenYearCHD, p), 
+  model_probit = miary_pred(model = probit1, dane = dane3_uczacy, Y = dane3_uczacy$TenYearCHD,  p))
+round(wyniki_miary_pred_u, 4)
+```
+
+Ocena zdolności predykcyjnej na zbiorze testowym
+
+czulosc - jak dobrze miodel wykrywa chorych ozn 1.
+
+```{r}
+wyniki_miary_pred_t <- rbind(
+  model_logit = miary_pred(model = logit2, dane = dane3_testowy,  Y = dane3_testowy$TenYearCHD, p), 
+  model_probit = miary_pred(model = probit1, dane = dane3_testowy, Y = dane3_testowy$TenYearCHD,  p))
+round(wyniki_miary_pred_t, 4)
+```
+
+**Wnioski**
+
+Na podstawie powyższych miar jakości predykcji można stwierdzić, że ... miary pogorszyly sie nieznacznie wzgledem uczacego z wyjatkiem czulosci gdzie byl spadek o 0,8 pkt proc
+
+```{r}
+round(wyniki_miary_pred_t - wyniki_miary_pred_u, 4)
+```
+
+
+(należy sprawdzić, czy na zbiorze testowym nie pogorszyły się znacząco miary jakości predykcji w stosunku do zbioru uczącego) 
+
+### Krzywa ROC
+
+Krzywa ROC prezentuje jeakość predykcji modelu dla wszystkich możliwych punktów odcięcia p* 
+(jest niezależna od wyboru p*). Dla modeli oszacowanych na zbiorze uczącym porównana została poniżej jakość predykcji na zbiorze uczącym i testowym. Proszę sprawdzić, czy jakość predykcji dla zbioru testowego nie pogorszyła się znacząco w stosunku do jakości predykcji dla zbioru uczącego.
+
+krzywa czerwona - ROC wyznaczona na zbiorze uczącym
+
+krzywa niebieska - ROC wyznaczona na zbiorze testowym
+```{r}
+rocobj1 <- roc(logit2$y, logit2$fitted.values)
+rocobj1_t <- roc(dane3_testowy$TenYearCHD, predict(logit2, dane3_testowy, type = "response"))
+plot(rocobj1, main = "krzywe ROC dla modelu logitowego", col="red")
+lines(rocobj1_t, col="blue")
+
+rocobj2 <- roc(probit1$y, probit1$fitted.values)
+rocobj2_t <- roc(dane3_testowy$TenYearCHD, predict(probit1, dane3_testowy, type = "response"))
+plot(rocobj2, main = "krzywe ROC dla modelu probitowego", col="red")
+lines(rocobj2_t, col="blue")
+```
+
+Pole powierzchni pod krzywą ROC
+```{r message=FALSE}
+cat("AUC dla zbioru uczącego\n")
+auc(rocobj1)
+auc(rocobj2)
+cat("\nAUC dla zbioru testowego\n")
+auc(rocobj1_t)
+auc(rocobj2_t)
+```
+
+**Wnioski**
+
+Na podstawie pola pod krzywą ROC można stwierdzić, że pole pod krzywa roc zmniejszyla sie ale nadal nie przekracza 0,7, czyli jakos pderykcji jest  dopuszczalna
+
+Proszę dodać AUC do wcześniej zdefiniowanej funkcji `miary_pred()`
+
+..........................................................................
+
+..........................................................................
+
+## Dodatek
+
+Wyznaczmy punktu odcięcia p* według indeksu Youdena dla krzywej ROC dla modelu logitowego, próba ucząca
+
+indeks Youdena = `max{SENS + SPEC}` lub `max{SENS + SPEC - 1}`
+
+argument `ret` - wartość zwracana
+
+```{r}
+p1 <- p
+cat("Punkt odcięcia jako proporcja z próby uczącej p*=", p1, "\n")
+p2 <- coords(rocobj1, "best", ret="threshold", best.method = "youden", transpose = TRUE)
+cat("Punkt odcięcia według indeksu Youdena dla próby uczącej p*=", p2, "\n")
+
+cat("\nPorównanie miar jakości predykcji dla dwóch punktów odcięcia \n")
+coords(rocobj1, p1, ret=c("threshold", "acc", "sens", "spec", "ppv", "npv", "youden"), transpose = TRUE)
+coords(rocobj1, "best", ret=c("threshold", "acc", "sens", "spec", "ppv", "npv", "youden"), best.method = "youden", transpose = TRUE)
+```
+
